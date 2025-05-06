@@ -109,10 +109,6 @@ def image_generation(prompt):
     
     messages = [
         {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        },
-        {
             "role": "user",
             "content": [{
                 "type": "text",
@@ -130,24 +126,31 @@ def image_generation(prompt):
     generation_image_grid_thw = torch.tensor([[1, 18, 18]]).to('cuda:0')
     
     with torch.no_grad():
-        outputs = model.generate(**inputs,
-                               max_new_tokens=1024,
-                               return_dict_in_generate=True,
-                               generation_image_grid_thw=generation_image_grid_thw)
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=1024,
+            return_dict_in_generate=True,
+            generation_image_grid_thw=generation_image_grid_thw,
+            use_cache=True
+        )
+        
+        if not hasattr(outputs, 'output_image_embeddings'):
+            image_embeddings = model.get_image_embeddings(outputs)
+            if image_embeddings is not None:
+                output_image_embeddings = image_embeddings
+            else:
+                raise ValueError("Failed to generate image embeddings")
+        else:
+            output_image_embeddings = outputs.output_image_embeddings
     
-    output_image_embeddings = outputs['output_image_embeddings']
     pipe_kwargs = {"negative_prompt": "", "cfg_scale": 3.0}
     image = flux_decoder.decode_image_embeds(output_image_embeddings, **pipe_kwargs)
     return image
 
 def image_generation_with_polish(prompt):
     """Enhanced image generation function with prompt optimization"""
-    extend_prompt_instruction = 'Please extend and polish the following image generation prompt: {}'
+    extend_prompt_instruction = '''Please enhance and enrich the following image generation prompt by adding more details, style and atmosphere descriptions to make it more specific and vivid: {}'''
     messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        },
         {
             "role": "user",
             "content": [
@@ -170,7 +173,6 @@ def image_generation_with_polish(prompt):
     extended_prompt = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
-    
     polished_image = image_generation(extended_prompt[0])
     return extended_prompt[0], polished_image
 
@@ -179,15 +181,17 @@ def image_editing(image, instruction):
     max_pixels = 262640
     gen_size = 512
     
-    instruction = instruction.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
+    # Convert numpy array to PIL Image if needed
+    input_image = Image.fromarray(image) if not isinstance(image, Image.Image) else image
+    
     messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        },
         {
             "role": "user",
             "content": [
+                {
+                    "type": "image",
+                    "image": input_image,
+                },
                 {"type": "text", "text": instruction},
             ],
         }
@@ -196,7 +200,6 @@ def image_editing(image, instruction):
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     
     # Process input image
-    input_image = Image.fromarray(image) if not isinstance(image, Image.Image) else image
     input_w, input_h = input_image.size
     resized_height, resized_width = smart_resize(
         input_h,
